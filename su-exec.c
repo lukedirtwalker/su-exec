@@ -1,5 +1,7 @@
 /* set user and group id and exec */
 
+#define _GNU_SOURCE
+
 #include <sys/types.h>
 
 #include <err.h>
@@ -11,47 +13,51 @@
 #include <string.h>
 #include <unistd.h>
 
+#define ENV_VAR "SU_EXEC_USERSPEC"
+
 static char *argv0;
 
 static void usage(int exitcode)
 {
-	printf("Usage: %s user-spec command [args]\n", argv0);
+	printf("Usage: %s=user:group %s command [args]\n", ENV_VAR, argv0);
 	exit(exitcode);
 }
 
 int main(int argc, char *argv[])
 {
 	char *user, *group, **cmdargv;
-	char *end;
-
-	uid_t uid = getuid();
-	gid_t gid = getgid();
+	char *userspec;
 
 	argv0 = argv[0];
-	if (argc < 3)
+	if (argc < 2) {
 		usage(0);
+	}
+	cmdargv = &argv[1];
 
-	user = argv[1];
+	/*
+	 * It's not safe to access the environment if running suid, so use
+	 * secure_getenv to prevent that.
+	 */
+	userspec = secure_getenv(ENV_VAR);
+	if (userspec == NULL) {
+		errx(1, "%s env var not set", ENV_VAR);
+	}
+	if (strnlen(userspec, 50) == 0) {
+		errx(1, "%s env var is empty", ENV_VAR);
+	}
+
+	user = userspec;
 	group = strchr(user, ':');
-	if (group)
+	if (group) {
 		*group++ = '\0';
-
-	cmdargv = &argv[2];
-
-	struct passwd *pw = NULL;
-	if (user[0] != '\0') {
-		pw = getpwnam(user);
-		uid_t nuid = strtol(user, &end, 10);
-		if (*end == '\0')
-			uid = nuid;
 	}
+
+	struct passwd *pw = getpwnam(user);
 	if (pw == NULL) {
-		pw = getpwuid(uid);
+		errx(2, "Unknown user '%s'", user);
 	}
-	if (pw != NULL) {
-		uid = pw->pw_uid;
-		gid = pw->pw_gid;
-	}
+	uid_t uid = pw->pw_uid;
+	gid_t gid = pw->pw_gid;
 
 	setenv("HOME", pw != NULL ? pw->pw_dir : "/", 1);
 
@@ -61,20 +67,15 @@ int main(int argc, char *argv[])
 
 		struct group *gr = getgrnam(group);
 		if (gr == NULL) {
-			gid_t ngid = strtol(group, &end, 10);
-			if (*end == '\0') {
-				gr = getgrgid(ngid);
-				if (gr == NULL)
-					gid = ngid;
-			}
+			errx(2, "Unknown group '%s'", group);
 		}
-		if (gr != NULL)
-			gid = gr->gr_gid;
+		gid = gr->gr_gid;
 	}
 
 	if (pw == NULL) {
-		if (setgroups(1, &gid) < 0)
+		if (setgroups(1, &gid) < 0) {
 			err(1, "setgroups(%i)", gid);
+		}
 	} else {
 		int ngroups = 0;
 		gid_t *glist = NULL;
@@ -83,25 +84,31 @@ int main(int argc, char *argv[])
 			int r = getgrouplist(pw->pw_name, gid, glist, &ngroups);
 
 			if (r >= 0) {
-				if (setgroups(ngroups, glist) < 0)
+				if (setgroups(ngroups, glist) < 0) {
 					err(1, "setgroups");
+				}
 				break;
 			}
 
 			glist = realloc(glist, ngroups * sizeof(gid_t));
-			if (glist == NULL)
+			if (glist == NULL) {
 				err(1, "malloc");
+			}
 		}
 	}
 
-	if (setgid(gid) < 0)
+	if (setgid(gid) < 0) {
 		err(1, "setgid(%i)", gid);
+	}
 
-	if (setuid(uid) < 0)
+	if (setuid(uid) < 0) {
 		err(1, "setuid(%i)", uid);
+	}
 
 	execvp(cmdargv[0], cmdargv);
 	err(1, "%s", cmdargv[0]);
 
 	return 1;
 }
+
+// vim: noet ts=4 sw=4
