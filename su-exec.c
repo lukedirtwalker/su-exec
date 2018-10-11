@@ -3,6 +3,7 @@
 #define _GNU_SOURCE
 
 #include <sys/types.h>
+#include <sys/stat.h>
 
 #include <err.h>
 #include <errno.h>
@@ -45,6 +46,11 @@ int main(int argc, char *argv[])
 	if (strnlen(userspec, 50) == 0) {
 		errx(1, "%s env var is empty", ENV_VAR);
 	}
+
+	/**
+	 * Set default umask so that we have a fixed umask for docker processes.
+	 */
+	umask(0002);
 
 	user = userspec;
 	group = strchr(user, ':');
